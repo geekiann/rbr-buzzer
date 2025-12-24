@@ -19,15 +19,14 @@ def is_admin(member):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Tag bot is running.")
-
-
+    
 async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
     member = await update.effective_chat.get_member(user.id)
 
     if not context.args:
-        await update.message.reply_text("Usage: /tag create|add|ping")
+        await update.message.reply_text("Usage: /tag create|add|ping [...]")
         return
 
     action = context.args[0]
@@ -38,7 +37,11 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Admins only.")
             return
 
-        tag = context.args[1]
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /tag create <tag_name>")
+            return
+
+        tag = context.args[1].lower()  # Optional: make tags case-insensitive
         if tag in tags[chat_id]:
             await update.message.reply_text("Tag already exists.")
             return
@@ -51,25 +54,73 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Admins only.")
             return
 
-        tag = context.args[1]
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /tag add <tag> [@username1 ...] or reply to a message")
+            return
+
+        tag = context.args[1].lower()
         if tag not in tags[chat_id]:
             await update.message.reply_text("Tag does not exist.")
             return
 
-        if not update.message.reply_to_message:
-            await update.message.reply_text("Reply to a user to add them.")
-            return
+        added_count = 0
+        added_names = []
 
-        target = update.message.reply_to_message.from_user
-        tags[chat_id][tag].add(target.id)
+        # First, try to add from usernames in args (starting from index 2)
+        for arg in context.args[2:]:
+            if not arg.startswith("@") or len(arg) < 2:
+                continue  # Skip invalid
 
-        await update.message.reply_text(
-            f"{target.mention_html()} added to #{tag}",
-            parse_mode="HTML"
-        )
+            username = arg[1:]  # without @
+            try:
+                target_chat = await context.bot.get_chat(f"@{username}")
+                target_id = target_chat.id
+                target_name = target_chat.full_name or target_chat.username or f"User {target_id}"
+                if target_chat.username:
+                    target_name = f"@{target_chat.username}"
+
+                if target_id in tags[chat_id][tag]:
+                    added_names.append(f"{target_name} (already in tag)")
+                else:
+                    tags[chat_id][tag].add(target_id)
+                    added_names.append(target_name)
+                    added_count += 1
+            except Exception as e:
+                added_names.append(f"{arg} (not found or error)")
+
+        # If no usernames provided in args, fall back to reply-to-message
+        if added_count == 0 and len(added_names) == 0:
+            if not update.message.reply_to_message:
+                await update.message.reply_text("Provide at least one @username or reply to a user's message.")
+                return
+
+            target = update.message.reply_to_message.from_user
+            target_id = target.id
+            target_name = target.full_name or target.username or f"User {target_id}"
+            if target.username:
+                target_name = f"@{target.username}"
+
+            if target_id in tags[chat_id][tag]:
+                await update.message.reply_text(f"{target_name} is already in #{tag}.")
+                return
+
+            tags[chat_id][tag].add(target_id)
+            await update.message.reply_text(
+                f"{target_name} added to #{tag}"
+            )
+        else:
+            # Feedback for username additions
+            await update.message.reply_text(
+                f"Added {added_count} user(s) to #{tag}:\n" + "\n".join(added_names)
+            )
 
     elif action == "ping":
-        tag = context.args[1]
+        # (unchanged, except optional lower() for tag)
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /tag ping <tag> [message]")
+            return
+
+        tag = context.args[1].lower()
         message = " ".join(context.args[2:])
 
         if tag not in tags[chat_id]:
@@ -89,45 +140,3 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{''.join(mentions)}\n{message}",
             parse_mode="HTML"
         )
-
-
-async def hashtag_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-
-    text = update.message.text
-    if not text.startswith("#"):
-        return
-
-    tag = text.split()[0][1:]
-    chat_id = update.effective_chat.id
-
-    if tag not in tags.get(chat_id, {}):
-        return
-
-    mentions = [
-        f"<a href='tg://user?id={uid}'>•</a>"
-        for uid in tags[chat_id][tag]
-    ]
-
-    if mentions:
-        await update.message.reply_text(
-            "".join(mentions),
-            parse_mode="HTML"
-        )
-
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tag", tag_command))
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, hashtag_listener)
-    )
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
